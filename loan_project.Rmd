@@ -1,0 +1,295 @@
+---
+title: "loan_project"
+author: "Yiyang Zhang"
+date: "12/15/2021"
+---
+
+```{r}
+library(tidyverse)
+library(dplyr) # Lirary for spliting train & test dataset
+library(corrplot) # Plotting nice correlation matrix
+library(caret)
+library(pROC) # For checking ROC Curve of the model
+library(ROCR)
+library(gmodels)
+library(VIM)
+library(psych)
+library(MASS)
+library(ResourceSelection)
+
+
+
+```
+
+```{r}
+getwd()
+loan <- read.csv("loan.csv", header=T, na.strings=c("","NA"))
+loan_data <- loan
+attach(loan_data)
+loan_data <- dplyr::select(loan_data, -Loan_ID) #Removing Loan_ID as it has no logical corelation
+head(loan_data)
+```
+
+```{r}
+sum(is.na(loan_data))  ## Checking for total missing values
+colSums(is.na(loan_data)) ##  checking for any missing values in the feature
+aggr(loan,prop=FALSE,numbers=TRUE)     # left graph of missing value
+```
+
+## Explore data visually
+```{r}
+ggplot(data=loan_data) +
+  geom_point(aes(x=LoanAmount, y=Loan_Status, color=Property_Area)) 
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Loan_Status,color=Loan_Status)) 
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Loan_Amount_Term, fill=Loan_Status ))
+
+ggplot(data=loan_data) +
+  geom_histogram(aes(x=LoanAmount), bins = 50)
+
+ggplot(data=loan_data) +
+  geom_histogram(aes(x=ApplicantIncome))
+
+ggplot(data=loan_data) +
+  geom_histogram(aes(x=CoapplicantIncome ))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Credit_History, fill=Loan_Status))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Dependents,fill=Loan_Status ))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Education, fill=Loan_Status))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Married, fill=Loan_Status))
+
+#Making Contingency Table to check percentage of Credit_History in relation with  loan status
+CrossTable(loan_data$Loan_Status, loan_data$Credit_History,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE)
+
+CrossTable(loan_data$Loan_Status, loan_data$Married,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+
+CrossTable(loan_data$Loan_Status, loan_data$Education,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+
+CrossTable(loan_data$Loan_Status, loan_data$Self_Employed,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+
+CrossTable(loan_data$Loan_Status, loan_data$Property_Area,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+```
+
+## Handling Null, Missing and Categorical Variables
+inputs the mean into the missing values, similarly for categorical variable, we can use the category that appears the most frequently
+```{r}
+loan_data <- loan_data %>% 
+  mutate(LoanAmount=ifelse(is.na(LoanAmount), mean(LoanAmount, na.rm = T), LoanAmount),
+         Loan_Amount_Term=ifelse(is.na(Loan_Amount_Term), median(Loan_Amount_Term, na.rm = T), Loan_Amount_Term),
+         Credit_History=ifelse(is.na(Credit_History), 1, Credit_History))
+
+## Transform the categorical data, create dummy variables for categorical attributes 
+#I converted the Dependents variable to a continuous variable in order
+loan_data$Dependents=as.numeric(substr(loan_data$Dependents,1,1)) 
+
+loan_data <- loan_data %>%
+  mutate(Gender=ifelse(Gender=="Male",1,0),
+         Married=ifelse(Married=="Yes",1,0),
+         Education=ifelse(Education=="Graduate",1,0),
+         Self_Employed=ifelse(Self_Employed=="Yes",1,0),
+         Loan_Status=ifelse(Loan_Status=="Y",1,0))
+
+#deal with missing value again, for catergorical data, use the category that appears most frequently
+loan_data <- loan_data %>%
+  mutate(Gender=ifelse(is.na(Gender),1,Gender),
+         Married=ifelse(is.na(Married),1,Married),
+         Dependents=ifelse(is.na(Dependents),0,Dependents),
+         Self_Employed=ifelse(is.na(Self_Employed),0,Self_Employed))
+
+# More than 2 unique values treatment
+loan_data$Urban <- ifelse(loan_data$Property_Area=="Urban",1,0)
+loan_data$Rural <- ifelse(loan_data$Property_Area=="Rural",1,0)
+loan_data$Semiurban <-ifelse(loan_data$Property_Area=="Semiurban",1,0)
+head(loan_data)
+```
+
+## Handling  Outlier
+(Replace outlier with lower and upper cutoff value)
+using the rule of thumb where upper limit is computed as 1.5 * IRQ, where IRQ = 3rd Quartile – 1st Quartile. 
+```{r}
+#scatter plot  to detect outliers for ApplicantIncome
+plot(ApplicantIncome, ylab = "ApplicantIncome")
+
+outliers_upperlimit_AppIncome <- quantile(ApplicantIncome, 0.75) + 1.5 * IQR(ApplicantIncome) # upper_limit = 10171.25
+index.outliers.ApplicantIncome <- which(ApplicantIncome > outliers_upperlimit_AppIncome | ApplicantIncome < 0 ) # 50 outliers
+loan_data <- loan_data[-index.outliers.ApplicantIncome,] #Removing observations
+plot(loan_data$ApplicantIncome, ylab = "ApplicantIncome") 
+
+# detect outliers for CoapplicantIncome
+plot(loan_data$CoapplicantIncome, ylab = "CoapplicantIncome")
+outliers_upperlimit_CoIncome <- quantile(loan_data$CoapplicantIncome, 0.75) + 1.5 * IQR(loan_data$CoapplicantIncome) 
+index.outliers.CoIncome <- which(loan_data$CoapplicantIncome > outliers_upperlimit_CoIncome | loan_data$CoapplicantIncome < 0 ) 
+loan_data <- loan_data[-index.outliers.CoIncome,] #Removing observations
+plot(loan_data$CoapplicantIncome, ylab = "CoapplicantIncome")  
+
+# Treatment of outlier for LoanAmount
+plot(loan_data$LoanAmount, ylab = "LoanAmount")
+outliers_upperlimit_LoanAmount <- quantile(loan_data$LoanAmount, 0.75) + 1.5 * IQR(loan_data$LoanAmount) 
+index.outliers.LoanAmount <- which(loan_data$LoanAmount > outliers_upperlimit_LoanAmount | loan_data$LoanAmount < 0 ) 
+loan_data <- loan_data[-index.outliers.LoanAmount,] #Removing observations
+plot(loan_data$LoanAmount, ylab = "LoanAmount")  
+```
+
+
+#check for correlation between the variables
+exploratory data analysis is to check correlations among all variables 
+```{r}
+
+# graph check multicollinearity
+correlation <- loan_data[sapply(loan_data, is.numeric)]
+descrCorr <- cor(correlation)
+corrplot(descrCorr)
+
+pairs.panels(loan_data)
+
+```
+
+```{r}
+library(caTools)  
+set.seed(1)
+
+loan_data <- dplyr::select(loan_data, -Property_Area, -Semiurban) 
+
+indices = sample.split(loan_data$Loan_Status, SplitRatio = 0.80)
+train = loan_data[indices,]
+test = loan_data[!(indices),]
+
+
+#数据归一化
+train[,6:9] = scale(train[, c(6:9)])
+test[,6:9] = scale(test[, c(6:9)])
+```
+
+```{r}
+model <- glm(Loan_Status ~ ., family=binomial, data = train)
+summary(model)
+#发现有很多变量并不显著，故考虑剔除这些不显著的变量，这里使用逐步回归法进行变量的选择
+
+#step函数实现逐步回归法
+model2<-step(object = model,trace = 0)
+summary(model2)
+
+#Using stepAIC for variable selection, which is a iterative process of adding or removing variables, in order to get a subset of variables that gives the best performing model.
+stepAIC(model, direction="both")
+
+library(car)
+vif(model2)  # check multicolity多重共线性 all less than 5, good
+
+#test model significant 
+hoslem.test(train$Loan_Status, fitted(model2)) #0.5926
+```
+
+```{r}
+
+library(class)
+library(InformationValue)
+
+
+#算训练集的混淆矩阵和auc
+predicted_train <- predict(model2, train, type="response")
+confusionMatrix(train$Loan_Status, predicted_train)
+# accuracy
+(65+284)/(62+65+6+284)   # 0.8369305
+sensitivity(train$Loan_Status, predicted_train)  #0.9793103
+specificity(train$Loan_Status, predicted_train)   #0.488189
+roc_train <- roc(train$Loan_Status, predicted_train, plot= TRUE, print.auc=TRUE)  #auc 0.832
+
+# #这一块算的是测试集的混淆矩阵和auc
+#use model to predict probability of default
+predicted_test <- predict(model2, test, type="response")
+
+#create confusion matrix
+confusionMatrix(test$Loan_Status, predicted_test)
+
+# accuracy
+(12+73)/(12+20+73)   # 0.8095238
+sensitivity(test$Loan_Status, predicted_test)  #1
+specificity(test$Loan_Status, predicted_test)   #0.375
+
+roc_test <- roc(test$Loan_Status, predicted_test, plot= TRUE, print.auc=TRUE)  #0.65 auc
+
+
+
+# 找个一个合适的阈值优化我们的混淆矩阵，为什么，因为我想的是我们的数据集二分类一开始就不平衡，所以占比重较大的一方，肯定预测就要准一点，所以要调整一个比较好的阈值来优化
+pred <- prediction(predicted_train, train$Loan_Status)
+perf <- performance(pred, "spec", "sens")
+
+cutoffs <- data.frame(cut=perf@alpha.values[[1]], specificity=perf@x.values[[1]], 
+                      sensitivity= perf@y.values[[1]])
+
+opt_cutoff <- cutoffs[which.min(abs(cutoffs$specificity-cutoffs$sensitivity)),]
+opt_cutoff 
+
+#把阈值画出来看看
+ggplot(data = cutoffs) +
+  geom_line(aes(x = cut, y = specificity, color ="red"), size = 1.5)+
+  geom_line(aes(x = cut, y = sensitivity, color = "blue"), size = 1.5) +
+  labs(x = "cutoff", y ="value") +
+  scale_color_discrete(name = "", labels = c("Specificity", "Sensitivity"))+
+  geom_vline(aes(xintercept = opt_cutoff$cut))+
+  geom_text(aes(x= 0.55, y= 0.75),label="opt_cutoff = 0.77",hjust=1, size=4)
+
+
+#把阈值设置好之后，再次判断，训练集合得到了比较好的平衡，但是测试集还是不理想，和我们找个数据的数量和质量本身有一定的关系，我个人感觉这个数据集不是很好
+train_pred_c <- factor(ifelse(predicted_train >= 0.77, "1", "0")) 
+caret::confusionMatrix(data = train_pred_c, reference = as.factor(train$Loan_Status))
+
+
+
+predict(model2, newdata = test, type = "response") -> test_prob
+test_pred_c <- factor(ifelse(test_prob >= 0.77, "1", "0"))
+caret::confusionMatrix(data = test_pred_c, reference = as.factor(test$Loan_Status))
+
+```
+
+
+```{r}
+library(rpart)
+library(rpart.plot)
+
+set.seed(1)
+
+indices = sample.split(loan_data$Loan_Status, SplitRatio = 0.80)
+train = loan_data[indices,]
+test = loan_data[!(indices),]
+
+fit <- rpart(as.factor(train$Loan_Status)~., data = train, method = 'class')
+rpart.plot(fit)
+
+plotcp(fit)
+
+
+
+
+
+model <- rpart(train$Loan_Status~., data = train,
+               ## 设置控制树模型深度的参数
+               control = rpart.control(cp = 0.076))
+
+summary(model)
+
+## 可视化每个变量的重要性，针对获得的决策树模型，可以使用条形图可视化出每个变量在模型中的重要性，程序如下所示：
+
+varimp <- model$variable.importance
+varimpdf <- data.frame(var = names(varimp),
+                       impor = varimp)
+ggplot(varimpdf,aes(x = reorder(var,-impor), y = impor))+
+  geom_col(colour = "lightblue",fill = "lightblue")+
+  labs(x = "Features", y = "Importance Ranking") +
+   theme(axis.text.x=element_text(angle=90,hjust=1))
+```
